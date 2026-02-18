@@ -110,7 +110,7 @@ resource "aws_lb_listener" "kafka_listener" {
 resource "aws_launch_template" "kafka_lt" {
   name_prefix   = "lt-nodo-kafka-eda-"
   image_id      = "ami-0c7217cdde317cfec" 
-  instance_type = "t3.medium" # Kafka requiere un poco mas de memoria que t2.micro
+  instance_type = "t3.medium" 
   key_name      = var.ssh_key_name
 
   network_interfaces {
