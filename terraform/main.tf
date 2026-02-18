@@ -12,7 +12,7 @@ terraform {
   }
 }
 
-# 2. DETECCION Y FILTRADO DE RED
+# 2. DETECCION Y FILTRADO DE RED (Evita zonas sin capacidad)
 data "aws_vpc" "default" {
   default = true
 }
@@ -22,7 +22,6 @@ data "aws_subnets" "default" {
     name   = "vpc-id"
     values = [data.aws_vpc.default.id]
   }
-  # Evitamos la zona 'e' que no soporta t3.medium en algunas cuentas
   filter {
     name   = "availability-zone"
     values = ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1d", "us-east-1f"]
@@ -38,7 +37,7 @@ resource "random_string" "suffix" {
 
 # 3. SEGURIDAD (Security Groups)
 resource "aws_security_group" "sg_kafka_alb" {
-  name        = "sg_kafka_public_v4"
+  name        = "sg_kafka_public_v5"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -57,7 +56,7 @@ resource "aws_security_group" "sg_kafka_alb" {
 }
 
 resource "aws_security_group" "sg_kafka_nodes" {
-  name        = "sg_kafka_internal_v4"
+  name        = "sg_kafka_internal_v5"
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
@@ -84,7 +83,7 @@ resource "aws_security_group" "sg_kafka_nodes" {
 
 # 4. BALANCEADOR DE CARGA (ALB)
 resource "aws_lb" "kafka_alb" {
-  name               = "alb-kafka-v4"
+  name               = "alb-kafka-v5"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.sg_kafka_alb.id]
@@ -92,13 +91,17 @@ resource "aws_lb" "kafka_alb" {
 }
 
 resource "aws_lb_target_group" "kafka_tg" {
-  name     = "tg-kafka-v4"
+  name     = "tg-kafka-v5"
   port     = 3000
   protocol = "HTTP"
   vpc_id   = data.aws_vpc.default.id
 
   health_check {
-    path = "/health"
+    path                = "/health"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 5
   }
 }
 
@@ -113,15 +116,15 @@ resource "aws_lb_listener" "kafka_listener" {
   }
 }
 
-# 5. ALMACENAMIENTO (S3 con nombre unico)
+# 5. ALMACENAMIENTO (S3 único)
 resource "aws_s3_bucket" "kafka_bucket" {
   bucket        = "auditoria-kafka-logs-mauro-${random_string.suffix.result}"
   force_destroy = true
 }
 
-# 6. LANZAMIENTO (Launch Template)
+# 6. LANZAMIENTO (EC2 con corrección de puertos y versiones)
 resource "aws_launch_template" "kafka_lt" {
-  name_prefix   = "lt-kafka-v4-"
+  name_prefix   = "lt-kafka-v5-"
   image_id      = "ami-0c7217cdde317cfec" 
   instance_type = "t3.medium"
   key_name      = var.ssh_key_name
@@ -143,21 +146,20 @@ resource "aws_launch_template" "kafka_lt" {
               version: '3'
               services:
                 zookeeper:
-                  # Usamos la version estable de Zookeeper
                   image: confluentinc/cp-zookeeper:7.5.0
                   environment:
                     ZOOKEEPER_CLIENT_PORT: 2181
 
                 kafka:
-                  # USAMOS LA VERSION ESTABLE 7.5.0 (NO LATEST)
                   image: confluentinc/cp-kafka:7.5.0
                   depends_on:
                     - zookeeper
                   environment:
                     KAFKA_BROKER_ID: 1
                     KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-                    KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+                    # CORRECCION: Puertos distintos para evitar choque
                     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+                    KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
                     KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
                     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
 
@@ -169,14 +171,14 @@ resource "aws_launch_template" "kafka_lt" {
                   ports:
                     - "3000:3000"
                   environment:
-                    - KAFKA_BROKER=kafka:9092
+                    - KAFKA_BROKER=kafka:29092
                   depends_on:
                     - kafka
 
                 auditoria-consumer:
                   image: ${var.docker_user}/auditoria-kafka:latest
                   environment:
-                    - KAFKA_BROKER=kafka:9092
+                    - KAFKA_BROKER=kafka:29092
                     - REDIS_HOST=db-redis-logs
                     - BUCKET_NAME=${aws_s3_bucket.kafka_bucket.id}
                     - AWS_ACCESS_KEY_ID=${var.aws_access_key}
@@ -193,7 +195,7 @@ resource "aws_launch_template" "kafka_lt" {
 
 # 7. ESCALAMIENTO (ASG)
 resource "aws_autoscaling_group" "kafka_asg" {
-  name                = "asg-kafka-v4"
+  name                = "asg-kafka-v5"
   desired_capacity    = 1
   max_size            = 1
   min_size            = 1
