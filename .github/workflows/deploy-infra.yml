@@ -1,0 +1,38 @@
+name: Deploy Infraestructura Kafka
+
+on:
+  push:
+    paths:
+      - 'terraform/**'
+  workflow_run:
+    workflows: ["Build Gateway Kafka", "Build Auditoria Kafka"]
+    types: [completed] # Se ejecuta despues de que las imagenes esten listas
+
+jobs:
+  terraform:
+    name: 'Terraform Deploy'
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.workflow_run.conclusion == 'success' }}
+    
+    defaults:
+      run:
+        working-directory: ./terraform
+
+    steps:
+      - name: Checkout del codigo
+        uses: actions/checkout@v3
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v2
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Apply
+        run: |
+          terraform apply -auto-approve \
+            -var="ssh_key_name=${{ secrets.SSH_KEY_NAME }}" \
+            -var="docker_user=${{ secrets.DOCKER_USERNAME }}" \
+            -var="aws_access_key=${{ secrets.AWS_ACCESS_KEY_ID }}" \
+            -var="aws_secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY }}" \
+            -var="aws_session_token=${{ secrets.AWS_SESSION_TOKEN }}"
