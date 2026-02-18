@@ -3,79 +3,50 @@ const { Kafka } = require('kafkajs');
 const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
 const redis = require('redis');
 
-// Configuracion de AWS S3
 const s3 = new S3Client({
-    region: process.env.AWS_REGION,
+    region: "us-east-1",
     credentials: {
-        accessKey_id: process.env.AWS_ACCESS_KEY_ID,
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
         sessionToken: process.env.AWS_SESSION_TOKEN
     }
 });
 
-// Configuracion de Redis
 const redisClient = redis.createClient({
     url: `redis://${process.env.REDIS_HOST}:6379`
 });
 
-// Configuracion de Kafka Consumer
 const kafka = new Kafka({
     clientId: 'auditoria-consumer',
-    brokers: [process.env.KAFKA_BROKER]
+    brokers: [process.env.KAFKA_BROKER],
+    retry: { retries: 15 }
 });
 
 const consumer = kafka.consumer({ groupId: 'grupo-auditoria-logs' });
 
-/**
- * Funcion para procesar y persistir el mensaje recibido
- */
-async function persistirLog(data) {
-    const logId = `kafka-log-${Date.now()}`;
-    
-    try {
-        // 1. Persistencia en Redis (Cache de acceso rapido)
-        await redisClient.set(logId, JSON.stringify(data));
-        console.log(`Guardado en Redis: ${logId}`);
-
-        // 2. Persistencia en S3 (Almacenamiento de larga duracion)
-        const command = new PutObjectCommand({
-            Bucket: process.env.BUCKET_NAME,
-            Key: `eventos/${logId}.json`,
-            Body: JSON.stringify({ id: logId, ...data }),
-            ContentType: "application/json"
-        });
-        await s3.send(command);
-        console.log(`Guardado en S3: eventos/${logId}.json`);
-
-    } catch (error) {
-        console.error('Error durante la persistencia:', error.message);
-    }
-}
-
-/**
- * Inicio del proceso de escucha de Kafka
- */
-async function iniciarConsumidor() {
+async function run() {
     await redisClient.connect();
     await consumer.connect();
-    
-    // Suscripcion al topic definido en el Gateway
     await consumer.subscribe({ topic: 'logs-auditoria', fromBeginning: true });
 
-    console.log('Consumidor de Auditoria esperando eventos en Kafka...');
-
     await consumer.run({
-        eachMessage: async ({ topic, partition, message }) => {
+        eachMessage: async ({ message }) => {
             const data = JSON.parse(message.value.toString());
-            console.log(`Evento recibido de topic [${topic}]:`, data.accion);
+            const id = `log-${Date.now()}`;
+
+            // Persistencia en Redis
+            await redisClient.set(id, JSON.stringify(data));
+
+            // Persistencia en S3
+            await s3.send(new PutObjectCommand({
+                Bucket: process.env.BUCKET_NAME,
+                Key: `${id}.json`,
+                Body: JSON.stringify(data)
+            }));
             
-            // Ejecutar persistencia
-            await persistirLog(data);
+            console.log(`Log procesado y persistido: ${id}`);
         },
     });
 }
 
-iniciarConsumidor().catch(err => {
-    console.error('Error fatal en el consumidor:', err);
-    process.exit(1);
-});
+run().catch(console.error);

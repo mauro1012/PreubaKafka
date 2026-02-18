@@ -1,36 +1,20 @@
-# BLOQUE 1: CONFIGURACION DEL PROVEEDOR Y BACKEND
 provider "aws" {
   region = var.aws_region
 }
 
 terraform {
   backend "s3" {
-    bucket  = "examen-suple-kafka-2026" 
+    bucket  = "examen-suple-grpc-2026"
     key     = "proyecto-kafka-eda/terraform.tfstate"
     region  = "us-east-1"
     encrypt = true
   }
 }
 
-# BLOQUE 2: RED POR DEFECTO (VPC Y SUBNETS)
-data "aws_vpc" "default" { 
-  default = true 
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
-# BLOQUE 3: SEGURIDAD (SECURITY GROUPS)
-
-# Seguridad para el Balanceador de Entrada
+# SEGURIDAD: Security Groups
 resource "aws_security_group" "sg_kafka_alb" {
   name        = "sg_kafka_public_access"
-  description = "Acceso externo al Gateway de eventos"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = "vpc-064883582455b57bc" # Asegúrate que este ID sea el de tu VPC actual
 
   ingress {
     from_port   = 80
@@ -47,11 +31,9 @@ resource "aws_security_group" "sg_kafka_alb" {
   }
 }
 
-# Seguridad para las instancias del cluster Kafka/App
 resource "aws_security_group" "sg_kafka_nodes" {
   name        = "sg_kafka_internal_cluster"
-  description = "Comunicacion interna para Kafka y Microservicios"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = "vpc-064883582455b57bc"
 
   ingress {
     from_port       = 3000
@@ -75,23 +57,26 @@ resource "aws_security_group" "sg_kafka_nodes" {
   }
 }
 
-# BLOQUE 4: BALANCEADOR DE CARGA (ALB)
+# INFRAESTRUCTURA: ALB y ASG
 resource "aws_lb" "kafka_alb" {
   name               = "alb-sistema-eventos-kafka"
-  internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.sg_kafka_alb.id]
-  subnets            = data.aws_subnets.default.ids
+  subnets            = ["subnet-06a09282305a420b9", "subnet-075b9f767850567be"] 
 }
 
 resource "aws_lb_target_group" "kafka_tg" {
   name     = "tg-gateway-kafka-3000"
   port     = 3000
   protocol = "HTTP"
-  vpc_id   = data.aws_vpc.default.id
+  vpc_id   = "vpc-064883582455b57bc"
 
   health_check {
-    path = "/health"
+    path                = "/health"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 5
   }
 }
 
@@ -106,11 +91,11 @@ resource "aws_lb_listener" "kafka_listener" {
   }
 }
 
-# BLOQUE 5: INFRAESTRUCTURA DE INSTANCIAS (LAUNCH TEMPLATE)
+# LANZAMIENTO: EC2 con Docker Compose
 resource "aws_launch_template" "kafka_lt" {
-  name_prefix   = "lt-nodo-kafka-eda-"
+  name_prefix   = "lt-nodo-kafka-"
   image_id      = "ami-0c7217cdde317cfec" 
-  instance_type = "t3.medium" 
+  instance_type = "t3.medium"
   key_name      = var.ssh_key_name
 
   network_interfaces {
@@ -130,19 +115,21 @@ resource "aws_launch_template" "kafka_lt" {
               version: '3'
               services:
                 zookeeper:
-                  image: bitnami/zookeeper:latest
+                  image: confluentinc/cp-zookeeper:latest
                   environment:
-                    - ALLOW_ANONYMOUS_LOGIN=yes
+                    ZOOKEEPER_CLIENT_PORT: 2181
 
                 kafka:
-                  image: bitnami/kafka:latest
-                  environment:
-                    - KAFKA_BROKER_ID=1
-                    - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
-                    - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
-                    - ALLOW_PLAINTEXT_LISTENER=yes
+                  image: confluentinc/cp-kafka:latest
                   depends_on:
                     - zookeeper
+                  environment:
+                    KAFKA_BROKER_ID: 1
+                    KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+                    KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+                    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+                    KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+                    KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
 
                 db-redis-logs:
                   image: redis:latest
@@ -174,14 +161,13 @@ resource "aws_launch_template" "kafka_lt" {
   )
 }
 
-# BLOQUE 6: GRUPO DE AUTO ESCALAMIENTO (ASG)
 resource "aws_autoscaling_group" "kafka_asg" {
   name                = "asg-cluster-eventos-kafka"
   desired_capacity    = 1
-  max_size            = 2
+  max_size            = 1
   min_size            = 1
   target_group_arns   = [aws_lb_target_group.kafka_tg.arn]
-  vpc_zone_identifier = data.aws_subnets.default.ids
+  vpc_zone_identifier = ["subnet-06a09282305a420b9", "subnet-075b9f767850567be"]
 
   launch_template {
     id      = aws_launch_template.kafka_lt.id
@@ -195,14 +181,6 @@ resource "aws_autoscaling_group" "kafka_asg" {
   }
 }
 
-# BLOQUE 7: ALMACENAMIENTO S3 PARA LOGS PROCESADOS
-resource "aws_s3_bucket" "kafka_bucket" {
-  bucket        = var.bucket_logs_kafka
-  force_destroy = true
-}
-
-# BLOQUE 8: SALIDAS (OUTPUTS)
 output "url_balanceador_kafka" {
-  description = "DNS para conectar el Sender al Gateway Kafka"
-  value       = aws_lb.kafka_alb.dns_name
+  value = aws_lb.kafka_alb.dns_name
 }
