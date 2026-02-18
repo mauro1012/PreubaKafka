@@ -143,12 +143,14 @@ resource "aws_launch_template" "kafka_lt" {
               version: '3'
               services:
                 zookeeper:
-                  image: confluentinc/cp-zookeeper:latest
+                  # Usamos la version estable de Zookeeper
+                  image: confluentinc/cp-zookeeper:7.5.0
                   environment:
                     ZOOKEEPER_CLIENT_PORT: 2181
 
                 kafka:
-                  image: confluentinc/cp-kafka:latest
+                  # USAMOS LA VERSION ESTABLE 7.5.0 (NO LATEST)
+                  image: confluentinc/cp-kafka:7.5.0
                   depends_on:
                     - zookeeper
                   environment:
