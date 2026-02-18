@@ -5,7 +5,7 @@ provider "aws" {
 
 terraform {
   backend "s3" {
-    bucket  = "examen-suple-grpc-2026" # Bucket creado manualmente
+    bucket  = "examen-suple-kafka-2026" 
     key     = "proyecto-kafka-eda/terraform.tfstate"
     region  = "us-east-1"
     encrypt = true
