@@ -1,3 +1,4 @@
+# 1. PROVEEDOR Y BACKEND
 provider "aws" {
   region = var.aws_region
 }
@@ -11,10 +12,23 @@ terraform {
   }
 }
 
-# SEGURIDAD: Security Groups
+# 2. DETECCION AUTOMATICA DE INFRAESTRUCTURA (Data Sources)
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# 3. SEGURIDAD (Security Groups)
 resource "aws_security_group" "sg_kafka_alb" {
-  name        = "sg_kafka_public_access"
-  vpc_id      = "vpc-064883582455b57bc" # Asegúrate que este ID sea el de tu VPC actual
+  name        = "sg_kafka_public_access_v3"
+  description = "Acceso HTTP para el balanceador de Kafka"
+  vpc_id      = data.aws_vpc.default.id
 
   ingress {
     from_port   = 80
@@ -32,8 +46,9 @@ resource "aws_security_group" "sg_kafka_alb" {
 }
 
 resource "aws_security_group" "sg_kafka_nodes" {
-  name        = "sg_kafka_internal_cluster"
-  vpc_id      = "vpc-064883582455b57bc"
+  name        = "sg_kafka_internal_cluster_v3"
+  description = "Comunicacion interna para nodos de Kafka"
+  vpc_id      = data.aws_vpc.default.id
 
   ingress {
     from_port       = 3000
@@ -57,19 +72,20 @@ resource "aws_security_group" "sg_kafka_nodes" {
   }
 }
 
-# INFRAESTRUCTURA: ALB y ASG
+# 4. BALANCEADOR DE CARGA (ALB)
 resource "aws_lb" "kafka_alb" {
-  name               = "alb-sistema-eventos-kafka"
+  name               = "alb-kafka-eda-mauro"
+  internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.sg_kafka_alb.id]
-  subnets            = ["subnet-06a09282305a420b9", "subnet-075b9f767850567be"] 
+  subnets            = data.aws_subnets.default.ids
 }
 
 resource "aws_lb_target_group" "kafka_tg" {
-  name     = "tg-gateway-kafka-3000"
+  name     = "tg-kafka-producer-v3"
   port     = 3000
   protocol = "HTTP"
-  vpc_id   = "vpc-064883582455b57bc"
+  vpc_id   = data.aws_vpc.default.id
 
   health_check {
     path                = "/health"
@@ -91,9 +107,9 @@ resource "aws_lb_listener" "kafka_listener" {
   }
 }
 
-# LANZAMIENTO: EC2 con Docker Compose
+# 5. LANZAMIENTO (Launch Template con Kafka Confluent)
 resource "aws_launch_template" "kafka_lt" {
-  name_prefix   = "lt-nodo-kafka-"
+  name_prefix   = "lt-nodo-kafka-v3-"
   image_id      = "ami-0c7217cdde317cfec" 
   instance_type = "t3.medium"
   key_name      = var.ssh_key_name
@@ -161,13 +177,14 @@ resource "aws_launch_template" "kafka_lt" {
   )
 }
 
+# 6. ESCALAMIENTO (ASG)
 resource "aws_autoscaling_group" "kafka_asg" {
-  name                = "asg-cluster-eventos-kafka"
+  name                = "asg-cluster-eventos-kafka-v3"
   desired_capacity    = 1
   max_size            = 1
   min_size            = 1
   target_group_arns   = [aws_lb_target_group.kafka_tg.arn]
-  vpc_zone_identifier = ["subnet-06a09282305a420b9", "subnet-075b9f767850567be"]
+  vpc_zone_identifier = data.aws_subnets.default.ids
 
   launch_template {
     id      = aws_launch_template.kafka_lt.id
@@ -181,6 +198,13 @@ resource "aws_autoscaling_group" "kafka_asg" {
   }
 }
 
+# 7. ALMACENAMIENTO (S3)
+resource "aws_s3_bucket" "kafka_bucket" {
+  bucket        = var.bucket_logs_kafka
+  force_destroy = true
+}
+
+# 8. SALIDAS
 output "url_balanceador_kafka" {
   value = aws_lb.kafka_alb.dns_name
 }
