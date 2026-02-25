@@ -1,4 +1,4 @@
-## 🚀 Instalación y Configuración
+##  Instalación y Configuración
 
 ### 1. Carpeta: Auditorio
 
@@ -78,3 +78,5 @@ get log-CAMBIA_ESTO_POR_TU_LLAVE
 exit
 
 ```
+5. **Siguiente repositorio**
+https://github.com/mauro1012/PruebaGrapQL.git
